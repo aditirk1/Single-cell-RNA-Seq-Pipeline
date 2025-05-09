@@ -57,7 +57,7 @@ mt <- annotations %>%
 process_gse_datasets <- function(base_dir) {
   # Find all *RAW.tar files in the base directory
   tar_files <- list.files(base_dir, pattern = ".*RAW\\.tar$", full.names = TRUE)
-  
+  # tar_files <- "GSE273937_RAW.tar"
   if (length(tar_files) == 0) {
     cat("No *RAW.tar files found in the specified directory.\n")
     return()
@@ -69,28 +69,28 @@ process_gse_datasets <- function(base_dir) {
     # Extract GSE ID from the tar file name
     gse_id <- sub("_RAW\\.tar$", "", basename(tar_file))
     cat(sprintf("\nProcessing file: %s (GSE ID: %s)\n", basename(tar_file), gse_id))
-    
+
     # Create GSE directory if it doesn't exist
     gse_dir <- file.path(base_dir, gse_id)
     dir.create(gse_dir, recursive = TRUE, showWarnings = FALSE)
-    
+
     # Create a temporary extraction directory
     extract_dir <- file.path(gse_dir, "temp_extract")
     dir.create(extract_dir, recursive = TRUE, showWarnings = FALSE)
-    
+
     # Extract tar file
     cat(sprintf("Extracting: %s\n", basename(tar_file)))
     untar(tar_file, exdir = extract_dir)
-    
+
     # Copy the original tar file to the GSE directory if it's not already there
     if (!file.exists(file.path(gse_dir, basename(tar_file)))) {
       file.copy(tar_file, gse_dir)
       cat(sprintf("Copied tar file to: %s\n", file.path(gse_dir, basename(tar_file))))
     }
-    
+
     # Find all relevant files in the extracted directory
     all_files <- list.files(extract_dir, full.names = TRUE, recursive = TRUE)
-    
+
     # Extract matrix files
     matrix_files <- all_files[grepl("matrix\\.mtx(\\.gz)?$", all_files)]
     
@@ -102,19 +102,18 @@ process_gse_datasets <- function(base_dir) {
     # Process each matrix file
     for (matrix_file in matrix_files) {
       # Extract sample identifier from the matrix file
-      file_prefix <- sub("_matrix\\.mtx(\\.gz)?$", "", basename(matrix_file))
+      file_prefix <- sub("matrix\\.mtx(\\.gz)?$", "", basename(matrix_file))
       
       # Find the corresponding feature and barcode files
-      feature_file <- all_files[grepl(paste0(file_prefix, "_features(\\.tsv|\\.txt)(\\.gz)?$"), all_files)][1]
-      barcode_file <- all_files[grepl(paste0(file_prefix, "_barcodes(\\.tsv|\\.txt)(\\.gz)?$"), all_files)][1]
-      meta_data_file <- all_files[grepl(paste0(file_prefix, "_bc_samples\\.csv(\\.gz)?$"), all_files)][1]
-      
+      feature_file <- all_files[grepl(paste0(file_prefix, "(features|genes)(\\.tsv|\\.txt)(\\.gz)?$"), all_files)][1]
+      barcode_file <- all_files[grepl(paste0(file_prefix, "barcodes(\\.tsv|\\.txt)(\\.gz)?$"), all_files)][1]
+
+      # meta_data_file <- all_files[grepl(paste0(file_prefix, "_bc_samples\\.csv(\\.gz)?$"), all_files)][1]
       # Check if required files exist
       if (is.na(feature_file) || is.na(barcode_file)) {
         cat(sprintf("Warning: Missing required files for sample %s, skipping\n", file_prefix))
         next
       }
-      
       cat(sprintf("\nProcessing sample: %s\n", file_prefix))
       cat(sprintf("  Matrix: %s\n  Features: %s\n  Barcodes: %s\n", 
                   basename(matrix_file), basename(feature_file), basename(barcode_file)))
@@ -131,6 +130,36 @@ process_gse_datasets <- function(base_dir) {
       # Read the barcodes file
       cell_ids <- readr::read_tsv(if(grepl("\\.gz$", barcode_file)) gzfile(barcode_file) else barcode_file, 
                                   col_names = FALSE, show_col_types = FALSE)$X1
+      # Read the count matrix
+      counts <- Matrix::readMM(if(grepl("\\.gz$", matrix_file)) gzfile(matrix_file) else matrix_file)
+      if (is.null(counts) || length(counts) == 0) {
+        stop(sprintf("Error: matrix file %s appears empty or failed to load", matrix_file))
+      }
+      counts <- as(counts, "CsparseMatrix")
+      
+      # Read features file
+      genes <- readr::read_tsv(if(grepl("\\.gz$", feature_file)) gzfile(feature_file) else feature_file, 
+                               col_names = FALSE, show_col_types = FALSE)
+      gene_ids <- genes$X1
+      
+      # Read barcodes file
+      cell_ids <- readr::read_tsv(if(grepl("\\.gz$", barcode_file)) gzfile(barcode_file) else barcode_file, 
+                                  col_names = FALSE, show_col_types = FALSE)$X1
+      
+      # Check dimensions
+      if (!inherits(counts, "Matrix")) {
+        stop(sprintf("Error: matrix file %s did not load as a sparse matrix", matrix_file))
+      }
+      if (nrow(counts) != length(gene_ids)) {
+        cat(sprintf("Warning: matrix row count (%d) != feature count (%d), trimming feature list\n", 
+                    nrow(counts), length(gene_ids)))
+        gene_ids <- gene_ids[1:nrow(counts)]
+      }
+      if (ncol(counts) != length(cell_ids)) {
+        cat(sprintf("Warning: matrix column count (%d) != barcode count (%d), trimming barcode list\n", 
+                    ncol(counts), length(cell_ids)))
+        cell_ids <- cell_ids[1:ncol(counts)]
+      }
       
       # Process metadata if available
       if (!is.na(meta_data_file)) {
@@ -207,7 +236,10 @@ process_gse_datasets <- function(base_dir) {
 
 # Example usage
 base_dir <- "/home/saini_lab/Documents/mitoDynamics/data"  # Replace with your actual base directory
-# Sample specific merging
+
+# Process all *RAW.tar files and save consolidated Seurat object lists
+process_gse_datasets(base_dir)
+# Function to merge specific samples
 merge_specific_samples <- function(samples) {
   # Merge sc5, sc6, and sc9
   sc_569 <- merge(x = samples[["GSM6940121_sc5"]], 
