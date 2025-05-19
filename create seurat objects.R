@@ -1,4 +1,3 @@
-# RAW.tar Files with barcode, matrix and feature files for automated suerat list generation
 # Load required libraries
 library(Seurat)
 library(Matrix)
