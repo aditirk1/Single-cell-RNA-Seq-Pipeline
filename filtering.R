@@ -267,4 +267,3 @@ for (i in names(samples)) {
   cat("Saved after filtering plots for", sample_name, "\n")
 }
 saveRDS(samples, file = "/home/saini_lab/Documents/mitoDynamics/Processed files/GSE223128/samples_pre-sct_filtered")
-
