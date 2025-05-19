@@ -1,4 +1,3 @@
-
 ## SCT NORMALIZATION
 # 1️⃣ Set up parallel processing with memory limits
 plan(strategy = "multicore", workers = 2)  # Adjust workers to your CPU cores
@@ -12,7 +11,7 @@ for (i in names(samples)) {
   gc(verbose = FALSE, full = TRUE)
   
   samples[[i]] <- SCTransform(samples[[i]], assay = "RNA", 
-                              vars.to.regress = NULL,  # or add e.g. "percent.mt" if desired
+                              vars.to.regress = "G2M.Score", 
                               verbose = FALSE,)
   
   hvgs <- VariableFeatures(samples[[i]])
@@ -58,15 +57,15 @@ visualize_sample <- function(sample, sample_name, output_dir = "plots") {
   ggsave(paste0(base_filename, "_clusters.pdf"), p1, width = 8, height = 7, dpi = 300, device = "pdf")
   
   # 2. QC metrics
-  if ("nUMI" %in% colnames(sample@meta.data) && 
-      "nGene" %in% colnames(sample@meta.data)) {
+  if ("nCount_SCT" %in% colnames(sample@meta.data) && 
+      "nFeature_SCT" %in% colnames(sample@meta.data)) {
     
-    p2 <- VlnPlot(sample, features = c("nGene", "nUMI"), 
+    p2 <- VlnPlot(sample, features = c("nFeature_SCT", "nCount_SCT"), 
                   ncol = 2, pt.size = 0) +
       ggtitle(paste0(sample_name, " - QC Metrics"))
     ggsave(paste0(base_filename, "_qc.pdf"), p2, width = 10, height = 5, dpi = 300, device = "pdf")
     
-    p3 <- FeatureScatter(sample, feature1 = "nUMI", feature2 = "nGene") +
+    p3 <- FeatureScatter(sample, feature1 = "nCount_SCT", feature2 = "nFeature_SCT") +
       ggtitle(paste0(sample_name, " - Feature-Count Relationship"))
     ggsave(paste0(base_filename, "_feature_count.pdf"), p3, width = 7, height = 6, dpi = 300, device = "pdf")
   }
@@ -102,7 +101,7 @@ visualize_markers <- function(sample, sample_name, output_dir = "plots",
   cat("Finding markers for", sample_name, "\n")
   
   # For memory efficiency, find markers for one cluster at a time
-  clusters <- unique(sample$seurat_clusters)
+  clusters <- unique(sample$harmony_clusters_res0.2)
   all_markers <- data.frame()
   
   for (cluster in clusters) {
@@ -173,13 +172,77 @@ for (i in names(samples)) {
   # Clear memory before visualization
   gc(verbose = FALSE, full = TRUE)
   
-  # Basic visualizations
-  visualize_sample(samples[[i]], i)
+  # # Basic visualizations
+  # visualize_sample(samples[[i]], i)
   
   # Marker gene visualizations (more memory intensive)
-  visualize_markers(samples[[i]], i, n_markers_per_cluster = 3)
+  visualize_markers(samples[[i]], i, n_markers_per_cluster = 2)
   
   gc(verbose = FALSE, full = TRUE)
   
   cat("Completed visualization for", i, "\n\n")
+}
+
+#### ABOVE HAS BEEN RUN SUCCESSFULLY.
+# -------Pathways---------
+# Get Hallmark gene sets
+hallmark_gene_sets <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, gene_symbol) %>%
+  split(f = .$gs_name) %>%
+  lapply(function(x) x$gene_symbol)
+
+# Get key pathway gene sets from HALLMARK collection
+pathway_gene_sets <- list(
+  hypoxia = hallmark_gene_sets$HALLMARK_HYPOXIA,
+  emt = hallmark_gene_sets$HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION,
+  glycolysis = hallmark_gene_sets$HALLMARK_GLYCOLYSIS,
+  oxidative_phosphorylation = hallmark_gene_sets$HALLMARK_OXIDATIVE_PHOSPHORYLATION,
+  reactive_oxygen_species = hallmark_gene_sets$HALLMARK_REACTIVE_OXYGEN_SPECIES_PATHWAY,
+  apoptosis = hallmark_gene_sets$HALLMARK_APOPTOSIS,
+  inflammatory_response = hallmark_gene_sets$HALLMARK_INFLAMMATORY_RESPONSE,
+  p53_pathway = hallmark_gene_sets$HALLMARK_P53_PATHWAY
+)
+
+# Use existing MitoCarta pathways
+#load mitocarta
+cat("Adding MitoCarta mitochondrial pathways\n")
+
+# Process mitochondrial pathways from MitoCarta data
+mito_pathway_names <- unique(mito_pathways$MitoPathway)
+
+# Add each mitochondrial pathway separately
+for (name in mito_pathway_names) {
+  # Skip if empty pathway name
+  if (is.na(name) || name == "" || is.null(name)) {
+    next
+  }
+  # Get genes for this pathway
+  gene_strings <- mito_pathways %>%
+    dplyr::filter(MitoPathway == name) %>%
+    pull(Genes)
+  # Split comma-separated gene strings and clean
+  mito_genes <- unlist(lapply(gene_strings, function(x) {
+    # Handle potential NAs
+    if (is.na(x) || x == "") return(character(0))
+    # Split by comma and trim whitespace
+    genes <- unlist(strsplit(x, ","))
+    trimws(genes)
+  }))
+  
+  # Remove duplicates
+  mito_genes <- unique(mito_genes)
+  
+  # Skip if too few genes
+  if (length(mito_genes) < 5) {
+    cat("Skipping mitochondrial pathway", name, "- too few genes\n")
+    next
+  }
+  
+  # Create clean pathway name for use in code
+  clean_path_name <- gsub("[^[:alnum:]]", "_", tolower(name))
+  clean_path_name <- paste0("mito_", clean_path_name)
+  
+  # Add to pathway gene sets
+  pathway_gene_sets[[clean_path_name]] <- mito_genes
+  cat("  - Added", name, "with", length(mito_genes), "genes\n")
 }
